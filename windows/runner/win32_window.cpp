@@ -3,6 +3,8 @@
 #include <dwmapi.h>
 #include <flutter_windows.h>
 
+#include "resource.h"
+
 namespace {
 constexpr const wchar_t kWindowClassName[] = L"SPHERE_PLAYER_WIN32";
 
