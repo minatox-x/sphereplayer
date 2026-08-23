@@ -1,17 +1,28 @@
-/// Parameters extracted from a streamplayer:// deep link.
+/// Parameters extracted from a  streamplayer://  deep link.
 ///
-/// Expected format:
-///   streamplayer://play?url=<encoded>&title=<encoded>&cookie=<encoded>&...
+/// Protocol format:
+///   streamplayer://play?bid=ABC&sid=XYZ&title=Foo&slug=bar&cookie=TOKEN&cookie_name=session
 ///
-/// All fields are optional – the player screen gracefully handles missing ones.
+/// Rules:
+///  - "cookie"       → extracted, NOT forwarded to player URL
+///  - "cookie_name"  → extracted, NOT forwarded to player URL  (default: "session")
+///  - everything else → forwarded verbatim as query params to /player2
+///
+/// Example result for:
+///   streamplayer://play?bid=6779&sid=69d6&title=Electrostatics&slug=physics&cookie=abc
+///
+/// buildPlayerUrl("https://streamworld.vercel.app/player2") →
+///   https://streamworld.vercel.app/player2?bid=6779&sid=69d6&title=Electrostatics&slug=physics
+///
+/// cookie → "abc", cookieName → "session"
 class PlayerParams {
-  /// The media URL (or any other query param) forwarded to the player endpoint.
+  /// All query params that will be forwarded to the player endpoint.
   final Map<String, String> queryParams;
 
-  /// Cookie value to be set on streamworld.vercel.app before loading the player.
+  /// Cookie value to set on streamworld.vercel.app  (null = no cookie)
   final String? cookie;
 
-  /// Cookie name (defaults to "session")
+  /// Cookie name  (default: "session")
   final String cookieName;
 
   const PlayerParams({
@@ -20,27 +31,41 @@ class PlayerParams {
     this.cookieName = 'session',
   });
 
+  // ── Parsing ────────────────────────────────────────────────────────────────
+
   factory PlayerParams.fromUri(Uri uri) {
+    // Clone so we can remove internal-only keys without mutating the Uri
     final params = Map<String, String>.from(uri.queryParameters);
 
-    // Extract cookie-specific fields so they are not forwarded as URL params
-    final cookie = params.remove('cookie');
+    final cookie     = params.remove('cookie');
     final cookieName = params.remove('cookie_name') ?? 'session';
 
     return PlayerParams(
       queryParams: params,
-      cookie: cookie,
-      cookieName: cookieName,
+      cookie:      cookie,
+      cookieName:  cookieName,
     );
   }
 
-  /// Build the final player URL with query params appended.
+  // ── URL builder ────────────────────────────────────────────────────────────
+
+  /// Appends [queryParams] to [baseUrl], merging with any params already
+  /// present in the base URL.  Our params take precedence on collision.
   String buildPlayerUrl(String baseUrl) {
     if (queryParams.isEmpty) return baseUrl;
-    final uri = Uri.parse(baseUrl);
-    final merged = {...uri.queryParameters, ...queryParams};
-    return uri.replace(queryParameters: merged).toString();
+
+    final base   = Uri.parse(baseUrl);
+    final merged = <String, String>{...base.queryParameters, ...queryParams};
+
+    return base.replace(queryParameters: merged).toString();
   }
 
-  bool get hasParams => queryParams.isNotEmpty || cookie != null;
+  // ── Helpers ────────────────────────────────────────────────────────────────
+
+  bool get hasCookie => cookie != null && cookie!.isNotEmpty;
+  bool get hasParams  => queryParams.isNotEmpty || hasCookie;
+
+  @override
+  String toString() =>
+      'PlayerParams(params=$queryParams, cookie=${hasCookie ? "[set]" : "none"})';
 }
