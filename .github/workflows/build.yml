@@ -3,90 +3,110 @@ name: Build Sphere Player
 on:
   workflow_dispatch:
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  ANDROID APK
+# ─────────────────────────────────────────────────────────────────────────────
 jobs:
-  # ─────────────────────────────────────────────────────────────────────────
-  #  Android APK
-  # ─────────────────────────────────────────────────────────────────────────
   build-android:
     name: Build Android APK
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
+          distribution: temurin
           java-version: '17'
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.22.0'
-          channel: 'stable'
+          flutter-version: '3.24.0'
+          channel: stable
           cache: true
 
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Analyse code
-        run: flutter analyze --no-fatal-infos
-        continue-on-error: true
+      - name: Build APK — split per ABI (arm64, armeabi, x86_64)
+        run: |
+          flutter build apk \
+            --release \
+            --split-per-abi \
+            --obfuscate \
+            --split-debug-info=build/debug-info/android
 
-      - name: Build APK (release)
-        run: flutter build apk --release --split-per-abi
+      - name: Build APK — universal (single file)
+        run: |
+          flutter build apk \
+            --release \
+            --obfuscate \
+            --split-debug-info=build/debug-info/android-universal
 
-      - name: Build APK (universal)
-        run: flutter build apk --release
+      - name: Rename APKs for clarity
+        run: |
+          cd build/app/outputs/flutter-apk
+          cp app-release.apk             SpherePlayer-universal.apk
+          cp app-arm64-v8a-release.apk   SpherePlayer-arm64.apk   2>/dev/null || true
+          cp app-armeabi-v7a-release.apk SpherePlayer-arm32.apk   2>/dev/null || true
+          cp app-x86_64-release.apk      SpherePlayer-x86_64.apk  2>/dev/null || true
 
       - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
         with:
           name: android-apks
           path: |
-            build/app/outputs/flutter-apk/app-release.apk
-            build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
-            build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
-            build/app/outputs/flutter-apk/app-x86_64-release.apk
+            build/app/outputs/flutter-apk/SpherePlayer-universal.apk
+            build/app/outputs/flutter-apk/SpherePlayer-arm64.apk
+            build/app/outputs/flutter-apk/SpherePlayer-arm32.apk
+            build/app/outputs/flutter-apk/SpherePlayer-x86_64.apk
           retention-days: 30
+          if-no-files-found: warn
 
-  # ─────────────────────────────────────────────────────────────────────────
-  #  Windows EXE
-  # ─────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+#  WINDOWS EXE
+# ─────────────────────────────────────────────────────────────────────────────
   build-windows:
     name: Build Windows EXE
-    runs-on: windows-latest
+    # windows-2022 ships with Visual Studio 2022 — required for flutter build windows
+    runs-on: windows-2022
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.22.0'
-          channel: 'stable'
+          flutter-version: '3.24.0'
+          channel: stable
           cache: true
 
-      - name: Enable Windows desktop support
+      - name: Enable Windows desktop
         run: flutter config --enable-windows-desktop
 
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Build Windows release
-        run: flutter build windows --release
+      - name: Build Windows release (obfuscated)
+        run: |
+          flutter build windows `
+            --release `
+            --obfuscate `
+            --split-debug-info=build/debug-info/windows
 
-      - name: Package Windows build
+      - name: Package into ZIP
         shell: pwsh
         run: |
-          $buildDir = "build\windows\x64\runner\Release"
-          $outDir   = "dist\SpherePlayer-Windows"
-          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
-          Copy-Item -Recurse -Force "$buildDir\*" "$outDir\"
-          Compress-Archive -Path "$outDir\*" -DestinationPath "dist\SpherePlayer-Windows.zip" -Force
+          $src = "build\windows\x64\runner\Release"
+          $out = "dist\SpherePlayer-Windows"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          Copy-Item -Recurse -Force "$src\*" "$out\"
+          Compress-Archive -Path "$out\*" `
+                           -DestinationPath "dist\SpherePlayer-Windows.zip" `
+                           -Force
+          Write-Host "Packaged: dist\SpherePlayer-Windows.zip"
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
@@ -95,14 +115,17 @@ jobs:
           path: dist/SpherePlayer-Windows.zip
           retention-days: 30
 
-  # ─────────────────────────────────────────────────────────────────────────
-  #  Release (only on version tags)
-  # ─────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+#  RELEASE  (tag builds only)
+# ─────────────────────────────────────────────────────────────────────────────
   release:
-    name: Create GitHub Release
+    name: GitHub Release
     needs: [build-android, build-windows]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
+
+    permissions:
+      contents: write   # required to create releases
 
     steps:
       - name: Download Android APKs
@@ -125,9 +148,10 @@ jobs:
           prerelease: false
           generate_release_notes: true
           files: |
-            artifacts/android/app-release.apk
-            artifacts/android/app-arm64-v8a-release.apk
-            artifacts/android/app-armeabi-v7a-release.apk
+            artifacts/android/SpherePlayer-universal.apk
+            artifacts/android/SpherePlayer-arm64.apk
+            artifacts/android/SpherePlayer-arm32.apk
+            artifacts/android/SpherePlayer-x86_64.apk
             artifacts/windows/SpherePlayer-Windows.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
